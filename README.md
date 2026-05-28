@@ -16,10 +16,14 @@
 - [Authentication](#authentication)
 - [1. Notifications](#1-notifications)
   - [Display a Notification](#display-a-notification)
+  - [Delivery Response](#delivery-response)
   - [Close a Notification](#close-a-notification)
   - [Display from Template](#display-from-template)
   - [Parameter Substitution](#parameter-substitution)
   - [Button Callbacks](#button-callbacks)
+  - [Rate Limiting](#rate-limiting)
+  - [Payload Size Limit](#payload-size-limit)
+  - [Bonus payload field — `webhook_secret`](#bonus-payload-field--webhook_secret)
 - [2. Widget Types](#2-widget-types)
   - [text](#text)
   - [image](#image)
@@ -50,7 +54,13 @@
   - [Speak Text](#speak-text)
   - [Stop TTS](#stop-tts)
   - [TTS in Notifications](#tts-in-notifications)
-- [7. Templates](#7-templates)
+- [7. Voice Assistant (HA Assist)](#7-voice-assistant-ha-assist)
+  - [Start a Session](#start-a-session)
+  - [Stop the Current Session](#stop-the-current-session)
+  - [Reset the Conversation Context](#reset-the-conversation-context)
+  - [List Available Pipelines](#list-available-pipelines)
+  - [Assist Config](#assist-config)
+- [8. Templates](#8-templates)
   - [Template Types](#template-types)
   - [List Templates](#list-templates)
   - [Load a Template](#load-a-template)
@@ -60,37 +70,39 @@
   - [Move a Template](#move-a-template)
   - [Export All (ZIP)](#export-all-zip)
   - [Import from ZIP](#import-from-zip)
-- [8. SVG Management](#8-svg-management)
-- [9. Home Assistant Integration](#9-home-assistant-integration)
+- [9. SVG Management](#9-svg-management)
+- [10. Home Assistant Integration](#10-home-assistant-integration)
   - [Configuration](#ha-configuration)
   - [Entity Widget (Real-time)](#entity-widget-real-time)
   - [Entity Info](#entity-info)
   - [Entity History](#entity-history)
   - [Chart Widget](#chart-widget)
   - [Camera Snapshot](#camera-snapshot)
-- [10. Menu Widget (TV Overlay)](#10-menu-widget-tv-overlay)
+- [11. HA Webhook Secret](#11-ha-webhook-secret-peek-it-ha-110)
+- [12. Menu Widget (TV Overlay)](#12-menu-widget-tv-overlay)
   - [Menu Structure](#menu-structure)
   - [Menu Item Types](#menu-item-types)
   - [D-pad Navigation](#d-pad-navigation)
   - [Menu Styling](#menu-styling)
   - [Toggle Polling](#toggle-polling)
-- [11. Configuration](#11-configuration)
+- [13. Configuration](#13-configuration)
   - [Clock Overlay](#clock-overlay)
   - [Screen Dimming](#screen-dimming)
+  - [Do Not Disturb (DND)](#do-not-disturb-dnd)
   - [Admin Mode](#admin-mode)
   - [Start Menu Override](#start-menu-override)
   - [Language](#language)
   - [Home Assistant Token](#home-assistant-token)
   - [API Key Management](#api-key-management)
-- [12. Service Status](#12-service-status)
-- [13. Logs](#13-logs)
-- [14. Internationalization](#14-internationalization)
-- [15. Overlay Behavior](#15-overlay-behavior)
+- [14. Service Status](#14-service-status)
+- [15. Logs](#15-logs)
+- [16. Internationalization](#16-internationalization)
+- [17. Overlay Behavior](#17-overlay-behavior)
   - [Notification Stack](#notification-stack)
   - [Anti Burn-in](#anti-burn-in)
   - [WebView Synchronization](#webview-synchronization)
-- [16. Limits & Constraints](#16-limits--constraints)
-- [17. Error Responses](#17-error-responses)
+- [18. Limits & Constraints](#18-limits--constraints)
+- [19. Error Responses](#19-error-responses)
 
 ---
 
@@ -137,12 +149,14 @@ peek-it uses a simple API key mechanism. An API key is auto-generated on first l
 |----------|-------------|
 | `GET /` | Designer web UI |
 | `GET /index.html` | Designer web UI |
+| `GET /favicon.png` | Service favicon |
 | `GET /api/status` | Service status |
 | `GET /api` | Endpoint list |
 | `GET /api/config/language` | Language preference |
 | `GET /locales/{lang}.json` | Locale files |
 | `GET /api/fonts/mdi.ttf` | Material Design Icons font |
 | `GET /api/ha/entity` | HA entity widget |
+| `GET /api/ha/entity-info` | HA entity info (JSON) |
 | `GET /api/ha/chart` | HA chart widget |
 | `GET /api/ha/history` | HA entity history |
 | `GET /api/camera/snapshot` | Camera snapshot |
@@ -185,7 +199,27 @@ The main event. This endpoint is where the magic happens — send a JSON payload
 | `callback_url` | string | *null* | URL to POST when a button is pressed |
 | `elements` | array | `[]` | Array of widget elements (see [Widget Types](#2-widget-types)) |
 
-**Response:** `{"status": "ok"}`
+### Delivery Response
+
+`POST /api/notify` returns a JSON body that reports whether the notification actually reached the screen — useful for companion clients (peek-it-send, peek-it-ha) that need to fall back to a standard Android notification when the overlay is suppressed.
+
+**Success (delivered):**
+```json
+{ "status": "ok", "delivered": true }
+```
+
+**Rejected (still HTTP 200 — the API call succeeded, but the overlay was suppressed):**
+```json
+{ "status": "ok", "delivered": false, "reason": "dnd_active", "fallback": "none" }
+```
+
+| `reason` | When it happens | `fallback` |
+|----------|-----------------|------------|
+| `dnd_active` | [DND mode](#do-not-disturb-dnd) is on | `none` |
+| `overlay_permission_denied` | `SYSTEM_ALERT_WINDOW` revoked by the user | `notification` *(client should fall back to a standard Android notification)* |
+| `empty_elements` | Payload had no `elements` and no resolvable `template_id` | `none` |
+
+`CLOSE` actions are never rejected by this logic — they always return `{"status":"ok","delivered":true}` even when DND is on.
 
 ### Close a Notification
 
@@ -247,6 +281,47 @@ When a widget has an `action` field and the user presses it (via remote/D-pad), 
 ```
 
 This enables interactive notifications — buttons that trigger automations, Tasker tasks, or any HTTP endpoint.
+
+### Rate Limiting
+
+`/api/notify` is protected by a per-client-IP **token bucket**:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Burst capacity | 20 requests | Max requests that can fire back-to-back |
+| Refill rate | 10 req/s | Sustained throughput after the burst is exhausted |
+
+`127.0.0.1` and `::1` are whitelisted — local scripts on the TV itself are never rate-limited.
+
+When the bucket is empty:
+
+```
+HTTP 429 Too Many Requests
+{ "error": "Rate limit: burst 20 req, sustained 10.0 req/s max" }
+```
+
+Bucket state is per-IP and persists for the lifetime of the service. The log file records every rate-limit hit.
+
+### Payload Size Limit
+
+`/api/notify` rejects requests with a JSON body larger than **256 KiB** (default; configurable in `PeekHttpServer`):
+
+```
+HTTP 413 Payload Too Large
+{ "error": "Payload trop volumineux (max 262144 octets)" }
+```
+
+This protects the parser against memory-bomb attacks. Keep templates lean — if you need lots of imagery, host it externally and reference URLs.
+
+### Bonus payload field — `webhook_secret`
+
+Any `POST /api/notify` payload may include a top-level string field:
+
+```json
+{ "action": "DISPLAY", "webhook_secret": "the-shared-secret", "elements": [...] }
+```
+
+If present, peek-it **silently extracts and persists** it as the HA webhook secret (see [HA Webhook Secret](#11-ha-webhook-secret-peek-it-ha-110)), then strips it from the payload before rendering. It is never logged. This is how peek-it-ha 1.1.0+ self-pairs on the first notification it sends.
 
 ---
 
@@ -649,7 +724,82 @@ You can combine TTS with a visual notification. The TV speaks while displaying:
 
 ---
 
-## 7. Templates
+## 7. Voice Assistant (HA Assist)
+
+peek-it embeds a full Home Assistant Assist client — voice or text. The TV listens on its microphone (or accepts a text prompt over HTTP), pipes the audio through the configured HA Assist pipeline, displays the streaming transcript in an animated overlay, and speaks the response back via TTS.
+
+All endpoints require `X-API-Key`. Make sure the HA token is set first (`POST /api/config/token`).
+
+### Start a Session
+
+```
+POST /api/assist
+```
+
+```json
+{ "mode": "voice" }
+```
+
+```json
+{ "mode": "text", "text": "Turn off the kitchen light" }
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `mode` | string | `"voice"` | `"voice"` opens the mic; `"text"` sends `text` directly to the pipeline |
+| `text` | string | — | Required when `mode = "text"` |
+
+**Response:** `{"status": "ok"}`
+
+The chat overlay (bubble strip + animated mic orb) appears automatically while the session runs.
+
+### Stop the Current Session
+
+```
+POST /api/assist/stop
+```
+
+Aborts any in-flight Assist exchange (mic, pipeline, TTS). Always returns `{"status": "ok"}`.
+
+### Reset the Conversation Context
+
+```
+POST /api/assist/reset
+```
+
+Clears the `conversation_id` so the next call starts a fresh thread (HA loses the multi-turn memory). Useful when the assistant gets confused.
+
+### List Available Pipelines
+
+```
+GET /api/assist/pipelines
+```
+
+Returns the list of HA Assist pipelines configured on the server. The call blocks for up to **15 seconds** waiting for the WebSocket response.
+
+**Response:**
+
+```json
+[
+  { "id": "01H...", "name": "Home Assistant" },
+  { "id": "01J...", "name": "OpenAI GPT-4o" }
+]
+```
+
+On timeout: `{"error": "timeout"}`. On HA error: `{"error": "..."}`.
+
+### Assist Config
+
+```
+GET /api/config/assist
+POST /api/config/assist
+```
+
+Stored fields include the selected `pipeline_id`, language, TTS engine, and voice. The exact schema is forwarded as-is to `VoiceAssistantManager` — send the same JSON you got from `GET` with the fields you want to change.
+
+---
+
+## 8. Templates
 
 Templates are saved notification layouts that can be reused and triggered by ID.
 
@@ -761,7 +911,7 @@ Multipart form upload. Templates are **merged by ID** — if a template with the
 
 ---
 
-## 8. SVG Management
+## 9. SVG Management
 
 Upload and serve custom SVG files for use in notifications.
 
@@ -790,7 +940,7 @@ GET /api/svg/serve?name=my_icon.svg
 
 ---
 
-## 9. Home Assistant Integration
+## 10. Home Assistant Integration
 
 peek-it has deep Home Assistant integration — real-time entity widgets, history charts, camera snapshots, and entity toggles in menus.
 
@@ -922,7 +1072,44 @@ Use it as the `content` of an `image` widget:
 
 ---
 
-## 10. Menu Widget (TV Overlay)
+## 11. HA Webhook Secret (peek-it-ha 1.1.0+)
+
+When `peek-it-ha` 1.1.0+ is paired with the TV, it signs the **debug webhook** it expects from peek-it with a shared secret. peek-it includes that secret in the `X-Peek-Secret` header on every webhook POST. The secret is stored in `PeekSecure` (EncryptedSharedPreferences).
+
+There are **two ways** to set the secret:
+
+1. **Automatic** — the next `POST /api/notify` payload from peek-it-ha includes a [`webhook_secret`](#bonus-payload-field--webhook_secret) field; peek-it extracts and persists it, then strips it from the in-memory payload before rendering. No action needed.
+2. **Manual** — use the endpoints below (useful when pairing a peek-it-ha < 1.1 retroactively, or when rotating the secret).
+
+### Get the Current Secret (masked)
+
+```
+GET /api/config/ha-webhook-secret
+```
+
+```json
+{ "secret": "exists", "masked": "abc***xyz" }
+```
+
+Or `{ "secret": "", "masked": "" }` if unset.
+
+### Set / Rotate the Secret
+
+```
+POST /api/config/ha-webhook-secret
+```
+
+```json
+{ "secret": "your-shared-secret" }
+```
+
+**Response:** `{ "status": "saved" }`
+
+> When the secret is unset, peek-it skips the `X-Peek-Secret` header and the HA webhook returns 401. peek-it logs one WARN per minute (throttled) to avoid flooding the log. Use the GET endpoint to confirm pairing.
+
+---
+
+## 12. Menu Widget (TV Overlay)
 
 The `menu` widget type creates a full overlay menu navigable with a TV remote (D-pad). Think Android TV settings menu, but for your automations.
 
@@ -1021,7 +1208,7 @@ Toggle items poll the Home Assistant REST API every **5 seconds** to update thei
 
 ---
 
-## 11. Configuration
+## 13. Configuration
 
 ### Clock Overlay
 
@@ -1087,6 +1274,33 @@ POST /api/config/dimming
 
 Applied immediately.
 
+### Do Not Disturb (DND)
+
+A simple kill switch that blocks all incoming `DISPLAY` notifications without stopping the HTTP server.
+
+When DND is on:
+- `POST /api/notify` returns `200 OK` but with `delivered: false`, `reason: "dnd_active"` (see [Delivery Response](#delivery-response))
+- The overlay is never shown, no sound, no TTS
+- `CLOSE` actions and all other endpoints keep working
+
+**Get:**
+```
+GET /api/config/dnd
+```
+```json
+{ "enabled": false }
+```
+
+**Set:**
+```
+POST /api/config/dnd
+```
+```json
+{ "enabled": true }
+```
+
+Applied immediately, broadcast to the service via `PEEKIT_CONFIG_CHANGED`.
+
 ### Admin Mode
 
 Unlocks the ability to create, modify, rename, and delete **official** templates.
@@ -1140,7 +1354,7 @@ POST /api/config/language
 { "language": "fr" }
 ```
 
-Supported: `en`, `fr`, `de`, `es`, `nl`. Both endpoints are **public** (no auth required).
+Supported: `en`, `fr`, `de`, `es`, `nl`, `pt`. Both endpoints are **public** (no auth required).
 
 ### Home Assistant Token
 
@@ -1195,7 +1409,7 @@ POST /api/config/apikey
 
 ---
 
-## 12. Service Status
+## 14. Service Status
 
 ```
 GET /api/status
@@ -1222,7 +1436,7 @@ This endpoint is **public** — no auth required. This is intentional: it allows
 
 ---
 
-## 13. Logs
+## 15. Logs
 
 ```
 GET /api/logs
@@ -1232,7 +1446,7 @@ Returns the service debug log file content. Useful for troubleshooting notificat
 
 ---
 
-## 14. Internationalization
+## 16. Internationalization
 
 The Designer web UI supports multiple languages. Locale files are served publicly:
 
@@ -1242,7 +1456,10 @@ GET /locales/fr.json
 GET /locales/de.json
 GET /locales/es.json
 GET /locales/nl.json
+GET /locales/pt.json
 ```
+
+**Supported:** `en`, `fr`, `de`, `es`, `nl`, `pt`. The Android UI (strings.xml) ships the same six locales.
 
 Each file contains ~373 translation keys used by the Designer interface.
 
@@ -1254,7 +1471,7 @@ The language preference is stored server-side and auto-detected in this order:
 
 ---
 
-## 15. Overlay Behavior
+## 17. Overlay Behavior
 
 ### Notification Stack
 
@@ -1287,7 +1504,7 @@ When a notification contains multiple WebView widgets:
 
 ---
 
-## 16. Limits & Constraints
+## 18. Limits & Constraints
 
 | Resource | Limit |
 |----------|-------|
@@ -1305,6 +1522,10 @@ When a notification contains multiple WebView widgets:
 | WebView ready timeout | 2 seconds (5s max) |
 | Anti burn-in cycle | 2 minutes |
 | Default port | 8081 (configurable) |
+| `/api/notify` rate limit (burst) | 20 requests |
+| `/api/notify` rate limit (sustained) | 10 req/s |
+| `/api/notify` payload size | 256 KiB (default) |
+| Assist pipelines fetch timeout | 15 seconds |
 
 ### Security
 
@@ -1315,7 +1536,7 @@ When a notification contains multiple WebView widgets:
 
 ---
 
-## 17. Error Responses
+## 19. Error Responses
 
 | HTTP Code | Meaning |
 |-----------|---------|
@@ -1324,6 +1545,8 @@ When a notification contains multiple WebView widgets:
 | `401` | Unauthorized (missing or invalid API key) |
 | `403` | Forbidden (path traversal attempt, admin mode required) |
 | `404` | Not found (template, sound, or SVG doesn't exist) |
+| `413` | Payload too large (`/api/notify` over 256 KiB) |
+| `429` | Rate limit exceeded (`/api/notify` token bucket empty) |
 | `500` | Internal server error |
 
 Error response body:
