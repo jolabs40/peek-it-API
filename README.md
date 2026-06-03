@@ -88,7 +88,7 @@
   - [Menu Structure](#menu-structure)
   - [Menu Item Types](#menu-item-types)
   - [D-pad Navigation](#d-pad-navigation)
-  - [Menu Styling](#menu-styling)
+  - [Menu Sizing](#menu-sizing)
   - [Toggle Polling](#toggle-polling)
 - [13. Configuration](#13-configuration)
   - [Clock Overlay](#clock-overlay)
@@ -274,7 +274,7 @@ On success the delivery response gains a `saved` block:
   "saved": { "id": "550e8400-...", "filename": "My Alert.json", "params": ["title"], "overwritten": false } }
 ```
 
-A write failure never invalidates delivery — the `saved` block then carries an `"error"` instead (`free_limit_reached`, `write_failed`, or a validation error with an optional `index`). This is part of the [`template_write`](#service-status) feature; see also [Write a Custom Template](#write-a-custom-template).
+A write failure never invalidates delivery — the `saved` block then carries an `"error"` instead (`free_limit_reached`, `write_failed`, or a validation error with an optional `index`). This is part of the [`template_write`](#14-service-status) feature; see also [Write a Custom Template](#write-a-custom-template).
 
 ### Display from Template
 
@@ -912,7 +912,7 @@ Returns the raw JSON content of the template.
 
 ### Write a Custom Template
 
-> Part of the **`template_write`** feature (advertised in [`GET /api/status`](#service-status) → `features`). This is the HA-friendly CRUD surface for custom templates — no Designer round-trip needed.
+> Part of the **`template_write`** feature (advertised in [`GET /api/status`](#14-service-status) → `features`). This is the HA-friendly CRUD surface for custom templates — no Designer round-trip needed.
 
 **Create / overwrite** a custom template:
 
