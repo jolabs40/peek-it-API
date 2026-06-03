@@ -18,6 +18,7 @@
   - [Display a Notification](#display-a-notification)
   - [Delivery Response](#delivery-response)
   - [Close a Notification](#close-a-notification)
+  - [Save as Template](#save-as-template)
   - [Display from Template](#display-from-template)
   - [Parameter Substitution](#parameter-substitution)
   - [Button Callbacks](#button-callbacks)
@@ -35,6 +36,7 @@
   - [line / arrow](#line--arrow)
   - [button](#button)
   - [menu](#menu)
+  - [confetti](#confetti)
 - [3. Widget Style Reference](#3-widget-style-reference)
   - [Position & Size](#position--size)
   - [Colors & Appearance](#colors--appearance)
@@ -64,6 +66,7 @@
   - [Template Types](#template-types)
   - [List Templates](#list-templates)
   - [Load a Template](#load-a-template)
+  - [Write a Custom Template](#write-a-custom-template)
   - [Save a Template](#save-a-template)
   - [Delete a Template](#delete-a-template)
   - [Rename a Template](#rename-a-template)
@@ -78,8 +81,10 @@
   - [Entity History](#entity-history)
   - [Chart Widget](#chart-widget)
   - [Camera Snapshot](#camera-snapshot)
+  - [Camera Probe (Designer)](#camera-probe-designer)
 - [11. HA Webhook Secret](#11-ha-webhook-secret-peek-it-ha-110)
 - [12. Menu Widget (TV Overlay)](#12-menu-widget-tv-overlay)
+  - [Anchoring (`anchor`)](#anchoring-anchor)
   - [Menu Structure](#menu-structure)
   - [Menu Item Types](#menu-item-types)
   - [D-pad Navigation](#d-pad-navigation)
@@ -93,6 +98,7 @@
   - [Start Menu Override](#start-menu-override)
   - [Language](#language)
   - [Home Assistant Token](#home-assistant-token)
+  - [Home Assistant IP](#home-assistant-ip)
   - [API Key Management](#api-key-management)
 - [14. Service Status](#14-service-status)
 - [15. Logs](#15-logs)
@@ -186,7 +192,8 @@ The main event. This endpoint is where the magic happens — send a JSON payload
 | `source` | string | `"UNKNOWN"` | Source identifier (for logging) |
 | `animationIn` | string | `"fade"` | Entry animation (see [Animations](#4-animations-inout)) |
 | `animationOut` | string | `"fade"` | Exit animation |
-| `priority` | string | `"normal"` | `normal`, `high`, or `low` |
+| `priority` | string | `"normal"` | `normal` or `urgent`. `urgent` **bypasses DND** (see [Delivery Response](#delivery-response)) |
+| `notification_id` | string | *null* | Optional id, remembered on `DISPLAY`; lets a later `CLOSE` target this exact notification |
 | `sound` | string | *null* | Sound filename (e.g. `"01_notify.wav"`). `"none"` = silent |
 | `soundVolume` | float | `1.0` | Volume 0.0 to 1.0 |
 | `tts` | string | *null* | Text to speak aloud (see [TTS](#6-text-to-speech-tts)) |
@@ -197,6 +204,8 @@ The main event. This endpoint is where the magic happens — send a JSON payload
 | `template_id` | string | *null* | Load elements from a saved template UUID |
 | `params` | object | *null* | Key-value pairs for parameter substitution |
 | `callback_url` | string | *null* | URL to POST when a button is pressed |
+| `save_as` | string | *null* | Persist the payload's `elements` as a custom template of this name **after** rendering (see [Save as Template](#save-as-template)) |
+| `save_overwrite` | boolean | `true` | With `save_as`: `true` overwrites a same-named template; `false` appends a ` (2)` suffix |
 | `elements` | array | `[]` | Array of widget elements (see [Widget Types](#2-widget-types)) |
 
 ### Delivery Response
@@ -215,11 +224,16 @@ The main event. This endpoint is where the magic happens — send a JSON payload
 
 | `reason` | When it happens | `fallback` |
 |----------|-----------------|------------|
-| `dnd_active` | [DND mode](#do-not-disturb-dnd) is on | `none` |
+| `dnd_active` | [DND mode](#do-not-disturb-dnd) is on **and** `priority` ≠ `urgent` | `none` |
 | `overlay_permission_denied` | `SYSTEM_ALERT_WINDOW` revoked by the user | `notification` *(client should fall back to a standard Android notification)* |
 | `empty_elements` | Payload had no `elements` and no resolvable `template_id` | `none` |
+| `premium_required` | Only Premium widgets were present on a non-unlocked device (all stripped) | `upgrade` |
 
 `CLOSE` actions are never rejected by this logic — they always return `{"status":"ok","delivered":true}` even when DND is on.
+
+**Urgent priority bypasses DND.** A payload with `"priority": "urgent"` is shown even while DND is active and returns `delivered:true`. Any other value (`normal`, or absent) stays subject to DND.
+
+**Premium gating.** On a device that has not unlocked Premium, Premium-only widgets (`video`, `webview`) are stripped before rendering. If *some* non-Premium widgets remain, the notification is delivered and the response carries an extra `"premium_blocked": true` flag. If *nothing* remains, you get `delivered:false`, `reason:"premium_required"`, `fallback:"upgrade"`.
 
 ### Close a Notification
 
@@ -230,6 +244,37 @@ curl -X POST http://TV:8081/api/notify \
 ```
 
 Closes the topmost notification. If notifications are stacked, the one underneath resumes.
+
+**Targeted close with `notification_id`.** If you sent the original `DISPLAY` with a `notification_id`, you can close *that specific* notification — even if it's buried in the stack — by sending the same id:
+
+```bash
+curl -X POST http://TV:8081/api/notify \
+  -H "X-API-Key: KEY" \
+  -d '{"action": "CLOSE", "notification_id": "kitchen-timer"}'
+```
+
+A `CLOSE` **without** a `notification_id` clears the whole stack (the legacy behaviour). A `CLOSE` *with* a `notification_id` removes only the matching entry and leaves the rest untouched.
+
+### Save as Template
+
+Add a `save_as` field to any `DISPLAY` payload to persist its `elements` as a reusable custom template — the notification renders first, then the template is written:
+
+```json
+{ "action": "DISPLAY", "save_as": "My Alert", "save_overwrite": true, "elements": [ ... ] }
+```
+
+- The `elements` are captured **before** any placeholder/Premium substitution, so the template keeps its `{{placeholders}}` and all original widgets. The notify envelope (`duration`, `sound`, `soundVolume`, `animationIn/Out`) is saved with it.
+- `save_overwrite` defaults to `true` (same name overwrites). Set `false` to keep both — the new one gets a ` (2)` suffix.
+- `save_as` **without** `elements` → `400 {"error":"save_as requires elements"}`.
+
+On success the delivery response gains a `saved` block:
+
+```json
+{ "status": "ok", "delivered": true,
+  "saved": { "id": "550e8400-...", "filename": "My Alert.json", "params": ["title"], "overwritten": false } }
+```
+
+A write failure never invalidates delivery — the `saved` block then carries an `"error"` instead (`free_limit_reached`, `write_failed`, or a validation error with an optional `index`). This is part of the [`template_write`](#service-status) feature; see also [Write a Custom Template](#write-a-custom-template).
 
 ### Display from Template
 
@@ -376,7 +421,9 @@ A circular image or MDI icon. Think profile pictures, status indicators.
 
 ### video
 
-Plays an RTSP or HTTP video stream via ExoPlayer (Media3). Audio is **disabled** by design — this is for surveillance cameras, live feeds, etc.
+> ⭐ **Premium widget.** On a non-unlocked device this element is stripped before rendering (see [Premium gating](#delivery-response)).
+
+Plays an RTSP or HTTP video stream via ExoPlayer (Media3), composited on a **TextureView** so the background app stays visible. Audio is **disabled** by design — this is for surveillance cameras, live feeds, etc.
 
 ```json
 {
@@ -386,11 +433,13 @@ Plays an RTSP or HTTP video stream via ExoPlayer (Media3). Audio is **disabled**
 }
 ```
 
-- **RTSP:** Uses UDP transport (no TCP fallback)
-- **Snapshot caching:** The last frame is cached for instant display on next load
-- **Buffering:** Widget is hidden off-screen during buffering, then slides in
+- **RTSP:** Transport is forced to **TCP** (`setForceUseRtpTcp(true)`) — this is what makes auth-protected cameras (Reolink & co.) negotiate correctly instead of crashing on a UDP `SETUP 401`.
+- **Snapshot caching:** The last rendered frame is captured (`TextureView.getBitmap()`) and re-shown instantly on the next open while the live stream re-negotiates (~3-4 s).
+- **Crash safety:** A guard neutralises any crash whose stack crosses the Media3 RTSP package, so one misbehaving camera can't kill the overlay.
 
 ### webview
+
+> ⭐ **Premium widget.** On a non-unlocked device this element is stripped before rendering (see [Premium gating](#delivery-response)).
 
 Embeds a full web page. JavaScript is enabled, but permissions (camera, mic, location) are **denied** for security.
 
@@ -402,6 +451,7 @@ Embeds a full web page. JavaScript is enabled, but permissions (camera, mic, loc
 }
 ```
 
+- **URL whitelist:** `https://` is accepted for any host; `http://` is restricted to local/private networks (`localhost`, `127.x`, `10.x`, `192.168.x`, `172.16–31.x`). Inline credentials (`user:pass@host`) are rejected.
 - **Ready signal:** The page can call `PeekBridge.notifyReady()` to tell peek-it the content is loaded. If not called, a 2-second timeout is used.
 - **Transparent background:** WebView background is transparent by default
 - **User-Agent:** Appended with `PeekIt-Viewer/1.0`
@@ -470,7 +520,24 @@ When pressed, sends `{"action": "do_something"}` to the `callback_url`.
 
 ### menu
 
-A full TV overlay menu with D-pad navigation. See [Menu Widget](#10-menu-widget-tv-overlay) for details.
+A full TV sidebar / overlay menu with D-pad navigation. See [Menu Widget](#12-menu-widget-tv-overlay) for details.
+
+### confetti
+
+A full-screen particle animation (Konfetti library). Non-focusable, captures neither D-pad nor touch, and ignores `style` geometry — it simply draws over the overlay and self-terminates.
+
+```json
+{
+  "type": "confetti",
+  "preset": "festive",
+  "colors": ["#FCE18A", "#FF726D", "#F4306D"]
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `preset` | string | `"festive"` | `festive` (dual upward burst from the bottom corners) or `parade` (continuous left+right side streams) |
+| `colors` | array | *festive palette* | Optional hex palette; omitted → default festive colors |
 
 ---
 
@@ -843,6 +910,62 @@ GET /api/templates/load?type=custom&name=My_Notif.json
 
 Returns the raw JSON content of the template.
 
+### Write a Custom Template
+
+> Part of the **`template_write`** feature (advertised in [`GET /api/status`](#service-status) → `features`). This is the HA-friendly CRUD surface for custom templates — no Designer round-trip needed.
+
+**Create / overwrite** a custom template:
+
+```
+POST /api/templates
+```
+
+```json
+{
+  "name": "My Alert",
+  "elements": [ { "type": "text", "content": "{{title}}", "style": { "left": 10, "top": 10, "width": 80, "height": 10 } } ],
+  "params": { "title": "Default title" },
+  "overwrite": true
+}
+```
+
+**Response:**
+```json
+{ "status": "ok", "id": "550e8400-e29b-41d4-a716-446655440000",
+  "filename": "My Alert.json", "params": ["title"], "overwritten": false }
+```
+
+- **Validation:** `elements` must be non-empty (`400`); every element needs a known `type` + a `style` (`400 {"error":"invalid element","index":N}`); `left/top/width/height` are clamped to `0..100`; a body over **64 KB** → `413`.
+- **Atomic write** (temp file + rename) into the Designer's custom folder.
+- `id` is a generated UUID v4, **preserved** when you overwrite the same name.
+- `{{placeholders}}` in element content are auto-detected and returned as `params`.
+
+**Load** a custom template by id:
+
+```
+GET /api/templates/{id}
+```
+
+```json
+{ "id": "550e8400-...", "filename": "My Alert.json", "elements": [ ... ], "params": ["title"] }
+```
+
+Returns `404` if the id is unknown.
+
+**Delete** a custom template by id:
+
+```
+DELETE /api/templates/{id}
+```
+
+```json
+{ "status": "ok", "deleted": "550e8400-..." }
+```
+
+Returns `404` if the id is unknown.
+
+> The classic `POST /api/templates/save` / `delete` / `rename` / `move` endpoints below are the **Designer-oriented** API (by `type` + `name`). The `{id}`-based CRUD above is the **HA-oriented** one and only targets the custom folder.
+
 ### Save a Template
 
 ```
@@ -1070,6 +1193,32 @@ Use it as the `content` of an `image` widget:
 }
 ```
 
+### Camera Probe (Designer)
+
+```
+GET /api/camera/probe?url=rtsp://user:pass@192.168.1.50:554/stream1
+```
+
+Validates a camera stream and returns its **native dimensions** — used by the Designer to size a `video` widget to the real aspect ratio. Accepts an `rtsp://` / `rtsps://` URL or an `http(s)://` JPEG snapshot URL. Auth: `X-API-Key`.
+
+**Success:**
+```json
+{ "ok": true, "width": 2560, "height": 1440, "par": 1.0, "source": "rtsp_probe" }
+```
+
+| `source` | How it was resolved |
+|----------|---------------------|
+| `ha_snapshot` | URL maps to an HA camera entity → snapshot dimensions **+ a base64 `image` thumbnail** (instant) |
+| `rtsp_probe` | Raw RTSP → headless probe, dimensions only (TCP forced) |
+| `http_image` | HTTP(S) JPEG → decoded dimensions |
+
+**Failure** (always HTTP 200):
+```json
+{ "ok": false, "reason": "no_video" }
+```
+
+Reasons include `bad_url` and `no_video`. The probe is **single-flight** (one RTSP probe at a time) with an 8 s hard timeout.
+
 ---
 
 ## 11. HA Webhook Secret (peek-it-ha 1.1.0+)
@@ -1111,7 +1260,14 @@ POST /api/config/ha-webhook-secret
 
 ## 12. Menu Widget (TV Overlay)
 
-The `menu` widget type creates a full overlay menu navigable with a TV remote (D-pad). Think Android TV settings menu, but for your automations.
+The `menu` widget type renders a menu navigable with a TV remote (D-pad). Since the IBM Carbon redesign it defaults to a **left-edge, full-height sidebar** (TiviMate style), but it can also be a free-floating box. Think Android TV settings menu, but for your automations.
+
+### Anchoring (`anchor`)
+
+| Value | Behaviour |
+|-------|-----------|
+| `"sidebar"` *(default)* | Left-edge, full-height sidebar. Ignores `style.left/top/width/height`. Right divider, no rounded corners. A **missing** `anchor` = sidebar (backward-compatible). |
+| `"free"` | Floating box that honours `style.left/top/width/height`, with `cornerRadius` rounded corners and a full border. |
 
 ### Menu Structure
 
@@ -1127,20 +1283,24 @@ The `content` field of a `menu` element contains a JSON string (yes, JSON inside
 
 ### Menu Config
 
+Defaults follow the **IBM Carbon** design system.
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `anchor` | string | `"sidebar"` | `sidebar` or `free` (see above) |
 | `title` | string | *null* | Menu title (displayed at top) |
 | `titleIcon` | string | *null* | MDI icon next to title |
-| `bgColor` | string | `"#1E1E1E"` | Menu background color |
-| `textColor` | string | `"#FFFFFF"` | Item text color |
-| `accentColor` | string | `"#00E676"` | Title and focus accent color |
+| `bgColor` | string | `"#161616"` | Menu background color (Carbon gray-100) |
+| `textColor` | string | `"#F4F4F4"` | Item text color (Carbon gray-10) |
+| `accentColor` | string | `"#0F62FE"` | Focus accent color (Carbon blue-60) |
 | `fontSize` | integer | `16` | Font size (sp) |
-| `cornerRadius` | integer | `12` | Corner radius (dp) |
-| `showBorder` | boolean | `false` | Show border |
-| `borderColor` | string | `"#333333"` | Border color |
-| `borderWidth` | integer | `2` | Border width (dp) |
+| `cornerRadius` | integer | `0` | Corner radius (dp) — applies in `free` mode |
+| `showBorder` | boolean | `true` | Show border |
+| `borderColor` | string | `"#393939"` | Border color (Carbon gray-80) |
+| `borderWidth` | integer | `1` | Border width (dp) |
 | `showShadow` | boolean | `false` | Show drop shadow |
-| `shadowElevation` | integer | `16` | Shadow elevation (dp) |
+| `shadowElevation` | integer | `0` | Shadow elevation (dp) |
+| `sidebarWidthDp` | integer | `0` | Force the sidebar width (dp); `0` = auto. Clamped to the same bounds as auto |
 | `items` | array | `[]` | Array of menu items |
 
 ### Menu Item Types
@@ -1150,6 +1310,7 @@ The `content` field of a `menu` element contains a JSON string (yes, JSON inside
 | `action` | Yes | Triggers a callback action on press |
 | `submenu` | Yes | Opens a nested menu (children array) |
 | `toggle` | Yes | HA entity toggle with live ON/OFF state |
+| `service` | Yes | Calls an HA service directly: `POST /api/services/<domain>/<service>` |
 | `text` | No | Informational text (not interactive) |
 | `close` | Yes | Closes the menu or returns to parent |
 
@@ -1161,7 +1322,9 @@ The `content` field of a `menu` element contains a JSON string (yes, JSON inside
 | `label` | string | Display text |
 | `icon` | string | MDI icon (e.g. `mdi:lightbulb`) |
 | `action` | string | Callback action string (for `action` and `toggle`) |
-| `entity_id` | string | HA entity ID (for `toggle` only) |
+| `entity_id` | string | HA entity ID (for `toggle` and `service`) |
+| `service` | string | HA service in `domain.service` form (for `service`, e.g. `scene.turn_on`) |
+| `service_data` | object | Optional extra data for the `service` call |
 | `children` | array | Nested menu items (for `submenu` only) |
 
 **Full example:**
@@ -1196,11 +1359,15 @@ The `content` field of a `menu` element contains a JSON string (yes, JSON inside
 | **Left** / **Back** | Return to parent menu |
 | **Back** (root level) | Close menu |
 
+### Focus styling (Carbon)
+
+A focused item shows a **4dp vertical accent bar** (blue-60) on its left plus a gray-80 background fill — no rounded corners. This matches the IBM Carbon list-item focus treatment.
+
 ### Menu Sizing
 
-- **Width:** Auto-calculated from the longest item text. Capped at **50% of screen width**
-- **Height:** Auto-calculated from number of items (48dp each + 50dp header). Capped at **95% of screen height**
-- Scrolls if content exceeds height cap
+- **Sidebar mode:** anchored to the left edge, full screen height, with a 1dp Carbon gray-80 divider on the right. Width is auto from the longest item, clamped to **[220dp, min(360dp, 22% of screen width)]**, or forced via `sidebarWidthDp` (same clamp).
+- **Free mode:** the box uses `style.left/top/width/height` (percent of screen) with `cornerRadius` rounded corners.
+- Scrolls if the items exceed the available height.
 
 ### Toggle Polling
 
@@ -1376,6 +1543,32 @@ POST /api/config/token
 { "token": "eyJ0eXAiOiJKV1QiLCJhbGci..." }
 ```
 
+The token is stored encrypted (`PeekSecure`).
+
+### Home Assistant IP
+
+The address of your HA server, used by every HA-backed feature (entity widgets, charts, camera snapshots, Assist). Stored encrypted, but returned **in the clear** by GET (it isn't a secret) to pre-fill the edit field.
+
+**Get:**
+```
+GET /api/config/ha-ip
+```
+
+```json
+{ "ip": "192.168.1.10:8123" }
+```
+
+**Set:**
+```
+POST /api/config/ha-ip
+```
+
+```json
+{ "ip": "192.168.1.10" }
+```
+
+Accepts `host` or `host:port` (default port **8123** when omitted). An empty string clears it. Anything that isn't a valid `host[:port]` → `400`.
+
 ### API Key Management
 
 **Get:**
@@ -1421,6 +1614,7 @@ GET /api/status
 {
   "status": "online",
   "version": "v10.9",
+  "features": ["template_write"],
   "device_name": "SHIELD Android TV",
   "api_key_required": true,
   "api_key_valid": true,
@@ -1428,11 +1622,25 @@ GET /api/status
     "width": 1920,
     "height": 1080,
     "density": 2.0
+  },
+  "permissions": {
+    "overlay": true,
+    "accessibility": false,
+    "microphone": true
   }
 }
 ```
 
 This endpoint is **public** — no auth required. This is intentional: it allows companion apps (like peek-it Send) to check connectivity and validate API keys.
+
+- `version` is the **internal API version** string (here `v10.9`) — independent of the app's user-facing `versionName`.
+- `api_key_valid` reflects whether the `X-API-Key` you sent (if any) matches the configured key.
+- `permissions` reports the runtime grants peek-it currently holds (overlay / accessibility / microphone).
+- **`features`** is a feature-detection array — test for a capability by membership rather than by version number. Current flags:
+
+  | Flag | Meaning |
+  |------|---------|
+  | `template_write` | HA-driven custom-template writing is available: [`POST /api/templates`](#write-a-custom-template), [`GET`/`DELETE /api/templates/{id}`](#write-a-custom-template), and [`save_as`](#save-as-template) on `/api/notify`. |
 
 ---
 
