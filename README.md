@@ -37,9 +37,12 @@
   - [button](#button)
   - [menu](#menu)
   - [confetti](#confetti)
+  - [bar](#bar)
+  - [gauge](#gauge)
 - [3. Widget Style Reference](#3-widget-style-reference)
   - [Position & Size](#position--size)
   - [Colors & Appearance](#colors--appearance)
+  - [Gradients](#gradients)
   - [Typography](#typography)
   - [Focus States](#focus-states)
   - [Shadows](#shadows)
@@ -539,6 +542,51 @@ A full-screen particle animation (Konfetti library). Non-focusable, captures nei
 | `preset` | string | `"festive"` | `festive` (dual upward burst from the bottom corners) or `parade` (continuous left+right side streams) |
 | `colors` | array | *festive palette* | Optional hex palette; omitted → default festive colors |
 
+### bar
+
+A **progress bar**. The 0–100 value comes from `content` (so it accepts `{{placeholders}}` for live Home Assistant values — battery, volume, charge…). Drawn natively on a Canvas; not focusable.
+
+```json
+{
+  "type": "bar",
+  "content": "64",
+  "style": { "left": 20, "top": 40, "width": 50, "height": 6, "color": "#0F62FE", "bgColor": "#393939", "radius": 8, "barOrientation": "horizontal" }
+}
+```
+
+| Field / Style | Type | Default | Description |
+|---------------|------|---------|-------------|
+| `content` | string | `""` | Value 0–100 (`"64"`, `"64%"`, or a `{{placeholder}}`). Clamped to 0–100. |
+| `style.color` | string | `"#0F62FE"` | Fill (gauge) color |
+| `style.bgColor` | string | `"#393939"` | Track color |
+| `style.radius` | integer | `0` | Rounded ends (dp) |
+| `style.borderWidth` / `borderColor` | — | — | Optional border |
+| `style.barOrientation` | string | `"horizontal"` | `"horizontal"` (fills left→right) or `"vertical"` (fills bottom→top) |
+
+### gauge
+
+A **circular gauge** (progress arc). Same value model as `bar`: 0–100 via `content` (placeholders supported). Drawn natively on a Canvas; not focusable.
+
+```json
+{
+  "type": "gauge",
+  "content": "72",
+  "style": { "left": 20, "top": 28, "width": 14, "height": 24, "color": "#0F62FE", "bgColor": "#393939", "borderWidth": 16, "size": 40, "gaugeShape": "ring", "gaugeShowValue": true }
+}
+```
+
+| Field / Style | Type | Default | Description |
+|---------------|------|---------|-------------|
+| `content` | string | `""` | Value 0–100 (placeholders supported). Clamped to 0–100. |
+| `style.color` | string | `"#0F62FE"` | Arc fill + centered text color |
+| `style.bgColor` | string | `"#393939"` | Track arc color |
+| `style.borderWidth` | integer | `0` | Ring thickness in dp (`0` = auto ≈ 12% of the smaller side) |
+| `style.size` | integer | `20` | Centered value text size (sp) |
+| `style.gaugeShape` | string | `"ring"` | `"ring"` (full 360°, starts at top) or `"arc"` (270°, gap at the bottom) |
+| `style.gaugeShowValue` | boolean | `true` | Show `"NN%"` text in the center |
+
+> **Tip:** make the box roughly square in pixels (e.g. `width: 14, height: 24` on a 16:9 screen) so the gauge stays circular.
+
 ---
 
 ## 3. Widget Style Reference
@@ -556,6 +604,8 @@ All positions and sizes are **percentages of the screen** (0-100).
 | `width` | float | `10` | Width (% of screen width) |
 | `height` | float | `10` | Height (% of screen height) |
 | `angle` | float | `0` | Rotation in degrees |
+| `scaleX` | float | `1.0` | Horizontal scale factor |
+| `scaleY` | float | `1.0` | Vertical scale factor |
 
 **Example:** A widget at `left: 50, top: 50` is centered on screen. A widget with `width: 100, height: 100` covers the entire screen.
 
@@ -566,11 +616,34 @@ All positions and sizes are **percentages of the screen** (0-100).
 | `color` | string | `"#FFFFFF"` | Text / foreground color |
 | `bgColor` | string | `"#00000000"` | Background color (supports alpha: `#AARRGGBB`) |
 | `opacity` | float | `1.0` | Overall opacity (0.0 = invisible, 1.0 = opaque) |
-| `radius` | integer | `0` | Corner radius in dp |
+| `radius` | integer | `0` | Corner radius in dp (all four corners) |
+| `radiusTL` | integer | `-1` | Top-left corner radius (dp). `-1` = fall back to `radius` |
+| `radiusTR` | integer | `-1` | Top-right corner radius (dp). `-1` = fall back to `radius` |
+| `radiusBR` | integer | `-1` | Bottom-right corner radius (dp). `-1` = fall back to `radius` |
+| `radiusBL` | integer | `-1` | Bottom-left corner radius (dp). `-1` = fall back to `radius` |
 | `borderWidth` | integer | `0` | Border width in dp |
 | `borderColor` | string | `"#00000000"` | Border color |
 
 **Alpha channel tip:** Use 2-digit hex prefix for transparency: `#CC000000` = 80% opaque black, `#00000000` = fully transparent.
+
+**Per-corner radius:** set any of `radiusTL/TR/BR/BL` to round corners independently (e.g. a speech-bubble or a one-sided card). Any corner left at `-1` uses the global `radius`. Applies to `box`/`rect`/`circle`/`button`/`text` backgrounds.
+
+### Gradients
+
+A widget background can be a **gradient** instead of a solid `bgColor`. Set `gradientColors` with **2 or more** hex colors to enable it (fewer than 2 → solid `bgColor`, unchanged). Applies to shapes with a background (`box`/`rect`/`ellipse`/`circle`/`button`/`text`).
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `gradientColors` | array | *(none)* | ≥ 2 hex colors, e.g. `["#0F62FE", "#161616"]`. Replaces `bgColor` when present. |
+| `gradientType` | string | `"linear"` | `"linear"`, `"radial"`, or `"sweep"` |
+| `gradientAngle` | integer | `0` | Linear only — rounded to the nearest 45°. `0` = left→right, `90` = bottom→top. |
+
+```json
+{
+  "type": "box",
+  "style": { "left": 20, "top": 30, "width": 50, "height": 20, "gradientColors": ["#0F62FE", "#161616"], "gradientType": "linear", "gradientAngle": 90, "radiusTL": 16, "radiusBR": 16 }
+}
+```
 
 ### Typography
 
@@ -604,18 +677,37 @@ For interactive widgets (buttons, focusable elements):
 
 ### Animations
 
-Per-widget looping animations:
+Per-widget animations:
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `animation` | string | `""` | `"spin"`, `"pulse"`, `"bounce"`, or `""` (none) |
+| `animation` | string | `""` | `"spin"`, `"pulse"`, `"bounce"`, `"zoom"`, `"shake"`, or `""` (none) |
 | `animationSpeed` | float | `2.0` | Duration of one animation cycle (seconds) |
+| `animationEasing` | string | `""` | Velocity curve — see below. `""` = default (spin → linear, others → ease) |
+| `animationLoop` | boolean | `true` | `true` = loop forever, `false` = play once |
 
-| Animation | Effect |
-|-----------|--------|
-| `spin` | Continuous 360 degree rotation |
-| `pulse` | Fade between 30% and 100% opacity |
-| `bounce` | Vertical bounce (-20px) |
+| Animation | Property animated | Effect |
+|-----------|-------------------|--------|
+| `spin` | rotation | Continuous 360° rotation |
+| `pulse` | alpha | Fade between 30% and 100% opacity |
+| `bounce` | translationY | Vertical bounce (-20px) |
+| `zoom` | scaleX/scaleY | Scale pulse (1.0 → 1.2 → 1.0) |
+| `shake` | translationX | Quick horizontal shake |
+
+**Easing** controls *how* the value moves over time (the velocity curve), independent of the animation type:
+
+| `animationEasing` | Curve |
+|-------------------|-------|
+| `""` *(default)* | `spin` → linear, all others → ease |
+| `linear` | Constant speed (best for `spin`) |
+| `ease` | Slow → fast → slow (smooth, natural) |
+| `ease_in` | Starts slow, accelerates |
+| `ease_out` | Starts fast, decelerates |
+| `bounce` | Bounces at the end like a ball |
+| `overshoot` | Overshoots the target, then settles back |
+| `anticipate` | Pulls back slightly before moving forward |
+
+> `overshoot` / `anticipate` / `bounce` are most striking on a one-shot emphasis — set `animationLoop: false`. Keep `spin` on `linear` so the rotation has no jerk per cycle.
 
 ---
 
