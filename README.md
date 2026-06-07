@@ -1955,7 +1955,7 @@ On failure: `{"ok": false, "reason": "<reason>"}` where `reason` is:
 
 The live card is rendered from an official template **`BambuPrint.json`** using native FREE widgets (`gauge`, `bar`, `text`). It updates in place as the print progresses (throttled), shows a "finished" card at the end, and an urgent card on failure (overrides DND).
 
-Available **placeholders** (filled live by the tracker, not by `params`): `{{progress}}`, `{{stage}}`, `{{layer}}`, `{{total}}`, `{{eta}}`, `{{file}}`, `{{nozzle}}`, `{{bed}}`, `{{chamber}}`, plus `{{nozzle_target}}` / `{{bed_target}}`. For dual-nozzle printers (H2D/X2D): `{{nozzleL}}` (left) / `{{nozzleR}}` (right) and `{{nozzles}}` — a ready-made line formatted by the **`dual_nozzle`** toggle (`Nozzle NN°C` for 1, `L NN°C / R NN°C` for 2).
+Available **placeholders** (filled live by the tracker, not by `params`): `{{progress}}`, `{{stage}}`, `{{layer}}`, `{{total}}`, `{{eta}}`, `{{file}}`, `{{nozzle}}`, `{{bed}}`, `{{chamber}}`, plus `{{nozzle_target}}` / `{{bed_target}}`. For dual-nozzle printers (H2D/X2D): `{{nozzleL}}` (left) / `{{nozzleR}}` (right) and `{{nozzles}}` — a ready-made line formatted by the **`dual_nozzle`** toggle (`Nozzle NN°C` for 1, `L NN°C / R NN°C` for 2). `{{stage}}` is **localized** to the app language (common stages translated in 6 languages; rare calibration phases fall back to a humanized label).
 
 **Custom card:** create your own template (`POST /api/templates`) using these placeholders, then point the tracker at it with `template_id` in `/api/bambu/config`. Resolution order: configured `template_id` → a template with id `bambu_print` → official `BambuPrint.json`.
 
