@@ -1882,6 +1882,7 @@ curl http://<peek-it-ip>:8081/api/bambu/config -H "X-API-Key: KEY"
   "has_access_code": true,
   "access_code_masked": "1***9",
   "template_id": "",
+  "camera_template_id": "",
   "camera": false,
   "dual_nozzle": true
 }
@@ -1905,6 +1906,7 @@ curl -X POST http://<peek-it-ip>:8081/api/bambu/config \
 | `access_code` | string | LAN access code — **written only if non-empty** (an empty field never wipes the saved code) |
 | `template_id` | string | *(optional)* id of the template used for the live card — see below |
 | `camera` | bool | *(optional, Premium)* show the live camera video tile — see [Camera](#camera) |
+| `camera_template_id` | string | *(optional)* custom template for the camera tile (use the `{{camera}}` placeholder) — empty = default tile |
 | `dual_nozzle` | bool | *(optional)* display 1 or 2 nozzles (user choice; default = auto-detected from the report) |
 
 Saving reconnects the MQTT client automatically. Response: `{"status": "ok"}`.
@@ -1966,6 +1968,8 @@ A **live camera video tile** can be shown next to the print card — **fully in-
 The X1 / H2D / X2D camera is an **RTSPS** stream (`rtsps://<ip>:322/streaming/live/1`, LIVE555, Digest auth) that Media3 cannot play directly (no RTSP-over-TLS). peek-it runs an internal RTSP proxy that terminates TLS, handles the Digest auth, rewrites the canonical URI, sanitizes the SDP and relays the interleaved RTP — so the built-in `video` widget plays it. Requires **LAN-only Liveview** enabled on the printer, and only **one camera connection** is allowed at a time (peek-it *or* Bambu Studio).
 
 > P1 / A1 / A1 mini use a different proprietary "chamber image" protocol (TCP 6000) and are **not** supported by the camera tile.
+
+**Custom camera tile:** by default the tile is a simple video widget below the print card. To design your own (framing, label, print info…), create a template (`POST /api/templates`) containing a `video` widget whose content is the **`{{camera}}`** placeholder, then set `camera_template_id` in `/api/bambu/config`. The tracker substitutes `{{camera}}` with the live stream URL plus all the tracking placeholders (`{{progress}}`, `{{file}}`…). It's a separate overlay shown once (so the video stays stable while the print card refreshes).
 
 **Diagnostic:**
 
