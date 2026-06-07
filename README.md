@@ -112,6 +112,7 @@
   - [WebView Synchronization](#webview-synchronization)
 - [18. Limits & Constraints](#18-limits--constraints)
 - [19. Error Responses](#19-error-responses)
+- [20. Bambu Lab Integration (LAN)](#20-bambu-lab-integration-lan)
 
 ---
 
@@ -1854,6 +1855,105 @@ Error response body:
 ```json
 { "error": "Description of what went wrong" }
 ```
+
+---
+
+## 20. Bambu Lab Integration (LAN)
+
+Track a **Bambu Lab 3D printer** live, overlaid on top of any app — **without Home Assistant**. peek-it connects directly to the printer's **local MQTT** broker (read-only) and renders a live progress card (gauge, layer, ETA, temperatures…).
+
+**How it works:** peek-it connects to `ssl://<printer-ip>:8883` (user `bblp`, password = the printer **Access Code**, self-signed TLS), subscribes to `device/<serial>/report`, sends a `pushall` request and merges the status deltas. It only **reads** status — no print/control commands are ever sent.
+
+**Printer setup (required):** on the printer, enable **LAN Mode** *and* **Developer Mode** (Settings → LAN Mode on touchscreen models, or Settings → Network on P1/A1). Developer Mode is **mandatory on the H2D** — without it the printer accepts the connection but sends no data (`/api/bambu/test` returns `no_data`). Developer Mode keeps the printer LAN-only (no Bambu Cloud); local printing from Bambu Studio still works.
+
+> **Read-only & LAN-only.** Status pushes are not affected by Bambu's authorization control. Cloud mode is out of scope.
+
+### Get Config
+
+```bash
+curl http://<peek-it-ip>:8081/api/bambu/config -H "X-API-Key: KEY"
+```
+
+```json
+{
+  "enabled": true,
+  "ip": "192.168.1.50",
+  "serial": "01P00A000000000",
+  "has_access_code": true,
+  "access_code_masked": "1***9",
+  "template_id": ""
+}
+```
+
+The access code is a secret (stored encrypted) and is **never** returned in clear — only a masked form.
+
+### Set Config
+
+```bash
+curl -X POST http://<peek-it-ip>:8081/api/bambu/config \
+  -H "Content-Type: application/json" -H "X-API-Key: KEY" \
+  -d '{"enabled": true, "ip": "192.168.1.50", "serial": "01P00A000000000", "access_code": "12345678"}'
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `enabled` | bool | Start/stop the live tracking |
+| `ip` | string | Printer IP (optional `:port`, default `8883`) |
+| `serial` | string | Printer serial number (used in the MQTT topic) |
+| `access_code` | string | LAN access code — **written only if non-empty** (an empty field never wipes the saved code) |
+| `template_id` | string | *(optional)* id of the template used for the live card — see below |
+
+Saving reconnects the MQTT client automatically. Response: `{"status": "ok"}`.
+
+### Get State
+
+```bash
+curl http://<peek-it-ip>:8081/api/bambu/state -H "X-API-Key: KEY"
+```
+
+```json
+{
+  "progress": 64, "remaining_min": 95, "layer": 50, "total_layer": 200,
+  "stage_id": 0, "stage": "Printing", "gcode_state": "RUNNING", "file": "benchy",
+  "nozzle": 220, "nozzle_target": 220, "nozzle2": 0, "nozzle2_target": 0,
+  "bed": 60, "bed_target": 60, "chamber": 28,
+  "dual_nozzle": false, "ever_received": true, "connected": true
+}
+```
+
+`connected` = MQTT link up. `ever_received` = at least one status report received (if `connected` is true but `ever_received` is false → **Developer Mode is off** on the printer). `dual_nozzle` is true on H2D (two extruders).
+
+### Test Connection
+
+```bash
+curl -X POST http://<peek-it-ip>:8081/api/bambu/test \
+  -H "Content-Type: application/json" -H "X-API-Key: KEY" -d '{}'
+```
+
+Uses the saved config (or override with `ip`/`serial`/`access_code` in the body). Connects, subscribes, waits for a first report, disconnects.
+
+```json
+{ "ok": true }
+```
+
+On failure: `{"ok": false, "reason": "<reason>"}` where `reason` is:
+
+| reason | Meaning |
+|---|---|
+| `no_data` | Connected (TLS + auth OK) but no status report → **enable Developer Mode** (typical on H2D) |
+| `unauthorized` | Access code refused |
+| `unreachable` | Printer unreachable / timeout |
+| `not_configured` | IP, serial or access code missing |
+
+### Live Card & Placeholders
+
+The live card is rendered from an official template **`BambuPrint.json`** using native FREE widgets (`gauge`, `bar`, `text`). It updates in place as the print progresses (throttled), shows a "finished" card at the end, and an urgent card on failure (overrides DND).
+
+Available **placeholders** (filled live by the tracker, not by `params`): `{{progress}}`, `{{stage}}`, `{{layer}}`, `{{total}}`, `{{eta}}`, `{{file}}`, `{{nozzle}}`, `{{nozzle2}}` (2nd nozzle, H2D), `{{bed}}`, `{{chamber}}`, plus `{{nozzle_target}}` / `{{bed_target}}`.
+
+**Custom card:** create your own template (`POST /api/templates`) using these placeholders, then point the tracker at it with `template_id` in `/api/bambu/config`. Resolution order: configured `template_id` → a template with id `bambu_print` → official `BambuPrint.json`.
+
+**Show on demand from a menu:** add a menu item with `"action": "sys:bambu"` to display the card with the **current values**. (Using `nav:replace:<id>` would show the raw `{{placeholders}}`, because only the Bambu tracker fills them.)
 
 ---
 
