@@ -1881,11 +1881,13 @@ curl http://<peek-it-ip>:8081/api/bambu/config -H "X-API-Key: KEY"
   "serial": "01P00A000000000",
   "has_access_code": true,
   "access_code_masked": "1***9",
-  "template_id": ""
+  "template_id": "",
+  "camera": false,
+  "dual_nozzle": true
 }
 ```
 
-The access code is a secret (stored encrypted) and is **never** returned in clear — only a masked form.
+The access code is a secret (stored encrypted) and is **never** returned in clear — only a masked form. `dual_nozzle` is only present once explicitly set.
 
 ### Set Config
 
@@ -1902,6 +1904,8 @@ curl -X POST http://<peek-it-ip>:8081/api/bambu/config \
 | `serial` | string | Printer serial number (used in the MQTT topic) |
 | `access_code` | string | LAN access code — **written only if non-empty** (an empty field never wipes the saved code) |
 | `template_id` | string | *(optional)* id of the template used for the live card — see below |
+| `camera` | bool | *(optional, Premium)* show the live camera video tile — see [Camera](#camera) |
+| `dual_nozzle` | bool | *(optional)* display 1 or 2 nozzles (user choice; default = auto-detected from the report) |
 
 Saving reconnects the MQTT client automatically. Response: `{"status": "ok"}`.
 
@@ -1921,7 +1925,7 @@ curl http://<peek-it-ip>:8081/api/bambu/state -H "X-API-Key: KEY"
 }
 ```
 
-`connected` = MQTT link up. `ever_received` = at least one status report received (if `connected` is true but `ever_received` is false → **Developer Mode is off** on the printer). `dual_nozzle` is true on H2D (two extruders).
+`connected` = MQTT link up. `ever_received` = at least one status report received (if `connected` is true but `ever_received` is false → **Developer Mode is off** on the printer). `dual_nozzle` is true on H2D/X2D (two extruders).
 
 ### Test Connection
 
@@ -1940,7 +1944,7 @@ On failure: `{"ok": false, "reason": "<reason>"}` where `reason` is:
 
 | reason | Meaning |
 |---|---|
-| `no_data` | Connected (TLS + auth OK) but no status report → **enable Developer Mode** (typical on H2D) |
+| `no_data` | Connected (TLS + auth OK) but no status report → **enable Developer Mode** (typical on H2D/X2D) |
 | `unauthorized` | Access code refused |
 | `unreachable` | Printer unreachable / timeout |
 | `not_configured` | IP, serial or access code missing |
@@ -1949,11 +1953,27 @@ On failure: `{"ok": false, "reason": "<reason>"}` where `reason` is:
 
 The live card is rendered from an official template **`BambuPrint.json`** using native FREE widgets (`gauge`, `bar`, `text`). It updates in place as the print progresses (throttled), shows a "finished" card at the end, and an urgent card on failure (overrides DND).
 
-Available **placeholders** (filled live by the tracker, not by `params`): `{{progress}}`, `{{stage}}`, `{{layer}}`, `{{total}}`, `{{eta}}`, `{{file}}`, `{{nozzle}}`, `{{nozzle2}}` (2nd nozzle, H2D), `{{bed}}`, `{{chamber}}`, plus `{{nozzle_target}}` / `{{bed_target}}`.
+Available **placeholders** (filled live by the tracker, not by `params`): `{{progress}}`, `{{stage}}`, `{{layer}}`, `{{total}}`, `{{eta}}`, `{{file}}`, `{{nozzle}}`, `{{bed}}`, `{{chamber}}`, plus `{{nozzle_target}}` / `{{bed_target}}`. For dual-nozzle printers (H2D/X2D): `{{nozzleL}}` (left) / `{{nozzleR}}` (right) and `{{nozzles}}` — a ready-made line formatted by the **`dual_nozzle`** toggle (`Nozzle NN°C` for 1, `L NN°C / R NN°C` for 2).
 
 **Custom card:** create your own template (`POST /api/templates`) using these placeholders, then point the tracker at it with `template_id` in `/api/bambu/config`. Resolution order: configured `template_id` → a template with id `bambu_print` → official `BambuPrint.json`.
 
 **Show on demand from a menu:** add a menu item with `"action": "sys:bambu"` to display the card with the **current values**. (Using `nav:replace:<id>` would show the raw `{{placeholders}}`, because only the Bambu tracker fills them.)
+
+### Camera
+
+A **live camera video tile** can be shown next to the print card — **fully in-app, no go2rtc**. Enable it with `camera: true` in `/api/bambu/config` (Premium feature).
+
+The X1 / H2D / X2D camera is an **RTSPS** stream (`rtsps://<ip>:322/streaming/live/1`, LIVE555, Digest auth) that Media3 cannot play directly (no RTSP-over-TLS). peek-it runs an internal RTSP proxy that terminates TLS, handles the Digest auth, rewrites the canonical URI, sanitizes the SDP and relays the interleaved RTP — so the built-in `video` widget plays it. Requires **LAN-only Liveview** enabled on the printer, and only **one camera connection** is allowed at a time (peek-it *or* Bambu Studio).
+
+> P1 / A1 / A1 mini use a different proprietary "chamber image" protocol (TCP 6000) and are **not** supported by the camera tile.
+
+**Diagnostic:**
+
+```bash
+curl http://<peek-it-ip>:8081/api/bambu/camera-test -H "X-API-Key: KEY"
+```
+
+Starts the proxy and probes the stream via Media3. Response `{"ok": true, "width": 1920, "height": 1080}` or `{"ok": false, "reason": "<reason>"}` (`timeout` | `no_video` | `unreachable` | `not_configured`).
 
 ---
 
