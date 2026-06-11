@@ -112,7 +112,7 @@
   - [WebView Synchronization](#webview-synchronization)
 - [18. Limits & Constraints](#18-limits--constraints)
 - [19. Error Responses](#19-error-responses)
-- [20. Bambu Lab Integration (LAN)](#20-bambu-lab-integration-lan)
+- [20. Bambu Lab Integration (LAN or Cloud)](#20-bambu-lab-integration-lan-or-cloud)
 
 ---
 
@@ -1707,7 +1707,7 @@ GET /api/status
 {
   "status": "online",
   "version": "v10.9",
-  "features": ["template_write"],
+  "features": ["template_write", "bambu_lan", "bambu_cloud"],
   "device_name": "SHIELD Android TV",
   "api_key_required": true,
   "api_key_valid": true,
@@ -1734,6 +1734,8 @@ This endpoint is **public** — no auth required. This is intentional: it allows
   | Flag | Meaning |
   |------|---------|
   | `template_write` | HA-driven custom-template writing is available: [`POST /api/templates`](#write-a-custom-template), [`GET`/`DELETE /api/templates/{id}`](#write-a-custom-template), and [`save_as`](#save-as-template) on `/api/notify`. |
+  | `bambu_lan` | [Bambu Lab print tracking](#20-bambu-lab-integration-lan-or-cloud) over the printer's local MQTT broker. |
+  | `bambu_cloud` | [Bambu Cloud mode](#cloud-mode-bambu-account): account sign-in + tracking via Bambu's cloud MQTT broker (no Developer Mode required). |
 
 ---
 
@@ -1858,15 +1860,23 @@ Error response body:
 
 ---
 
-## 20. Bambu Lab Integration (LAN)
+## 20. Bambu Lab Integration (LAN or Cloud)
 
-Track a **Bambu Lab 3D printer** live, overlaid on top of any app — **without Home Assistant**. peek-it connects directly to the printer's **local MQTT** broker (read-only) and renders a live progress card (gauge, layer, ETA, temperatures…).
+Track a **Bambu Lab 3D printer** live, overlaid on top of any app — **without Home Assistant**. peek-it subscribes to the printer's status feed (read-only MQTT) and renders a live progress card (gauge, layer, ETA, temperatures…). Two connection modes are available (`mode` in the config):
 
-**How it works:** peek-it connects to `ssl://<printer-ip>:8883` (user `bblp`, password = the printer **Access Code**, self-signed TLS), subscribes to `device/<serial>/report`, sends a `pushall` request and merges the status deltas. It only **reads** status — no print/control commands are ever sent.
+| | `lan` (default) | `cloud` |
+|---|---|---|
+| Broker | printer's local MQTT (`ssl://<printer-ip>:8883`, user `bblp`, password = Access Code) | Bambu's cloud broker (`us.mqtt.bambulab.com:8883`, authenticated with your Bambu account token) |
+| Printer requirements | **LAN Mode + Developer Mode** | printer **bound to your Bambu account** (cloud-connected; no Developer Mode needed) |
+| Camera tile | ✅ (X1/H2D/X2D) | ❌ (the RTSPS stream is LAN-only) |
+| Works without Internet | ✅ | ❌ |
+| Caveats | — | unofficial API (may break), token expires after ~3 months |
 
-**Printer setup (required):** on the printer, enable **LAN Mode** *and* **Developer Mode** (Settings → LAN Mode on touchscreen models, or Settings → Network on P1/A1). Developer Mode is **mandatory on the H2D** — without it the printer accepts the connection but sends no data (`/api/bambu/test` returns `no_data`). Developer Mode keeps the printer LAN-only (no Bambu Cloud); local printing from Bambu Studio still works.
+Both modes subscribe to the same `device/<serial>/report` topic with the same payload format, send a `pushall` request and merge the status deltas. peek-it only **reads** status — no print/control commands are ever sent (status pushes are not affected by Bambu's authorization control).
 
-> **Read-only & LAN-only.** Status pushes are not affected by Bambu's authorization control. Cloud mode is out of scope.
+**LAN printer setup:** on the printer, enable **LAN Mode** *and* **Developer Mode** (Settings → LAN Mode on touchscreen models, or Settings → Network on P1/A1). Developer Mode is **mandatory on the H2D/X2D** — without it the printer accepts the connection but sends no data (`/api/bambu/test` returns `no_data`). Developer Mode keeps the printer LAN-only (no Bambu Cloud); local printing from Bambu Studio still works.
+
+**Cloud printer setup:** the printer must be signed in to your Bambu account (LAN-only Mode disabled). Sign in to the account from peek-it — see [Cloud Mode](#cloud-mode-bambu-account).
 
 ### Get Config
 
@@ -1877,10 +1887,13 @@ curl http://<peek-it-ip>:8081/api/bambu/config -H "X-API-Key: KEY"
 ```json
 {
   "enabled": true,
+  "mode": "lan",
   "ip": "192.168.1.50",
   "serial": "01P00A000000000",
   "has_access_code": true,
   "access_code_masked": "1***9",
+  "cloud_email": "",
+  "has_cloud_token": false,
   "template_id": "",
   "camera_template_id": "",
   "camera": false,
@@ -1888,7 +1901,7 @@ curl http://<peek-it-ip>:8081/api/bambu/config -H "X-API-Key: KEY"
 }
 ```
 
-The access code is a secret (stored encrypted) and is **never** returned in clear — only a masked form. `dual_nozzle` is only present once explicitly set.
+The access code and the cloud token are secrets (stored encrypted) and are **never** returned in clear — only a masked form / boolean presence flags. `dual_nozzle` is only present once explicitly set.
 
 ### Set Config
 
@@ -1901,7 +1914,8 @@ curl -X POST http://<peek-it-ip>:8081/api/bambu/config \
 | Field | Type | Notes |
 |---|---|---|
 | `enabled` | bool | Start/stop the live tracking |
-| `ip` | string | Printer IP (optional `:port`, default `8883`) |
+| `mode` | string | `"lan"` (default) or `"cloud"` — which broker to use |
+| `ip` | string | Printer IP (optional `:port`, default `8883`) — LAN mode only |
 | `serial` | string | Printer serial number (used in the MQTT topic) |
 | `access_code` | string | LAN access code — **written only if non-empty** (an empty field never wipes the saved code) |
 | `template_id` | string | *(optional)* id of the template used for the live card — see below |
@@ -1909,7 +1923,7 @@ curl -X POST http://<peek-it-ip>:8081/api/bambu/config \
 | `camera_template_id` | string | *(optional)* custom template for the camera tile (use the `{{camera}}` placeholder) — empty = default tile |
 | `dual_nozzle` | bool | *(optional)* display 1 or 2 nozzles (user choice; default = auto-detected from the report) |
 
-Saving reconnects the MQTT client automatically. Response: `{"status": "ok"}`.
+The POST is a **partial update**: only the fields present in the body are written (e.g. `{"enabled": false}` alone toggles the tracking without touching anything else). Saving reconnects (or disconnects) the MQTT client automatically. Response: `{"status": "ok"}`.
 
 ### Get State
 
@@ -1936,7 +1950,7 @@ curl -X POST http://<peek-it-ip>:8081/api/bambu/test \
   -H "Content-Type: application/json" -H "X-API-Key: KEY" -d '{}'
 ```
 
-Uses the saved config (or override with `ip`/`serial`/`access_code` in the body). Connects, subscribes, waits for a first report, disconnects.
+Uses the saved config (or override with `ip`/`serial`/`access_code`/`mode` in the body). Connects to the broker selected by the mode, subscribes, waits for a first report, disconnects.
 
 ```json
 { "ok": true }
@@ -1946,10 +1960,54 @@ On failure: `{"ok": false, "reason": "<reason>"}` where `reason` is:
 
 | reason | Meaning |
 |---|---|
-| `no_data` | Connected (TLS + auth OK) but no status report → **enable Developer Mode** (typical on H2D/X2D) |
-| `unauthorized` | Access code refused |
-| `unreachable` | Printer unreachable / timeout |
-| `not_configured` | IP, serial or access code missing |
+| `no_data` | Connected (TLS + auth OK) but no status report → LAN: **enable Developer Mode** (typical on H2D/X2D) ; cloud: printer offline or wrong serial |
+| `unauthorized` | LAN: access code refused — cloud: **account token expired/revoked** → sign in again |
+| `not_bound` | Cloud only: broker auth OK but the subscription was denied → the printer is **not bound to this Bambu account** (LAN-only Mode active on the printer) or the serial is wrong |
+| `unreachable` | Broker unreachable / timeout |
+| `not_configured` | Missing fields (LAN: IP/serial/access code — cloud: not signed in or serial missing) |
+
+### Cloud Mode (Bambu account)
+
+Cloud mode signs in to your **Bambu account** and tracks the printer through Bambu's cloud MQTT broker. No Developer Mode required — the printer just needs to be cloud-connected (bound to the account). Feature-detect with `"bambu_cloud"` in [`GET /api/status`](#14-service-status) `features`.
+
+**Sign-in flow** (Bambu enforces email 2FA for everyone):
+
+```bash
+# 1. Login with the account password → Bambu emails a 6-digit code
+curl -X POST http://<peek-it-ip>:8081/api/bambu/cloud-login \
+  -H "Content-Type: application/json" -H "X-API-Key: KEY" \
+  -d '{"email": "you@example.com", "password": "..."}'
+# → {"status": "verify_code_sent"}
+
+# 2. Exchange the emailed code for an access token (stored encrypted, ~3 months)
+curl -X POST http://<peek-it-ip>:8081/api/bambu/cloud-verify \
+  -H "Content-Type: application/json" -H "X-API-Key: KEY" \
+  -d '{"email": "you@example.com", "code": "123456"}'
+# → {"status": "ok", "serial": "01P00A000000000", "devices": [{"serial": "...", "name": "X1C"}]}
+```
+
+On success the mode switches to `cloud`, the token is stored encrypted, and the serial is auto-filled from the account's printer list (if it was empty). The password is **never stored** — it only transits to Bambu's API. Sign out with:
+
+```bash
+curl -X POST http://<peek-it-ip>:8081/api/bambu/cloud-logout -H "X-API-Key: KEY"
+```
+
+`cloud-login` / `cloud-verify` statuses:
+
+| status | Meaning |
+|---|---|
+| `verify_code_sent` | Nominal: Bambu emailed a verification code → call `cloud-verify` |
+| `ok` | Signed in (token issued) — includes `serial` + `devices[]` |
+| `bad_credentials` | Email or password refused |
+| `invalid_code` | Wrong or expired verification code (codes last 5 minutes) |
+| `mfa_unsupported` | The account uses app-based 2FA (TOTP) — not supported, use email verification |
+| `unreachable` / `error` | Bambu Cloud unreachable / unexpected response |
+
+**Good to know:**
+- Accounts created with **Google/social sign-in have no password** — set one via Bambu's "Forgot password?" flow first (social login keeps working alongside).
+- The token lasts **~3 months**; when it expires, `/api/bambu/test` returns `unauthorized` → sign in again.
+- The **camera tile is unavailable** in cloud mode (the RTSPS stream only exists on the LAN).
+- This relies on Bambu's **unofficial** cloud API — it may change or break without notice.
 
 ### Live Card & Placeholders
 
@@ -1963,7 +2021,7 @@ Available **placeholders** (filled live by the tracker, not by `params`): `{{pro
 
 ### Camera
 
-A **live camera video tile** can be shown next to the print card — **fully in-app, no go2rtc**. Enable it with `camera: true` in `/api/bambu/config` (Premium feature).
+A **live camera video tile** can be shown next to the print card — **fully in-app, no go2rtc**. Enable it with `camera: true` in `/api/bambu/config` (Premium feature, **LAN mode only** — the camera stream is not reachable through the cloud).
 
 The X1 / H2D / X2D camera is an **RTSPS** stream (`rtsps://<ip>:322/streaming/live/1`, LIVE555, Digest auth) that Media3 cannot play directly (no RTSP-over-TLS). peek-it runs an internal RTSP proxy that terminates TLS, handles the Digest auth, rewrites the canonical URI, sanitizes the SDP and relays the interleaved RTP — so the built-in `video` widget plays it. Requires **LAN-only Liveview** enabled on the printer, and only **one camera connection** is allowed at a time (peek-it *or* Bambu Studio).
 
@@ -1977,7 +2035,7 @@ The X1 / H2D / X2D camera is an **RTSPS** stream (`rtsps://<ip>:322/streaming/li
 curl http://<peek-it-ip>:8081/api/bambu/camera-test -H "X-API-Key: KEY"
 ```
 
-Starts the proxy and probes the stream via Media3. Response `{"ok": true, "width": 1920, "height": 1080}` or `{"ok": false, "reason": "<reason>"}` (`timeout` | `no_video` | `unreachable` | `not_configured`).
+Starts the proxy and probes the stream via Media3. Response `{"ok": true, "width": 1920, "height": 1080}` or `{"ok": false, "reason": "<reason>"}` (`timeout` | `no_video` | `unreachable` | `not_configured` | `cloud_mode` — switch to LAN mode for the camera).
 
 ---
 
