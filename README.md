@@ -104,6 +104,7 @@
   - [Home Assistant IP](#home-assistant-ip)
   - [API Key Management](#api-key-management)
 - [14. Service Status](#14-service-status)
+  - [Anti-kill protection](#anti-kill-protection-permissionskeepalive)
 - [15. Logs](#15-logs)
 - [16. Internationalization](#16-internationalization)
 - [17. Overlay Behavior](#17-overlay-behavior)
@@ -1719,7 +1720,8 @@ GET /api/status
   "permissions": {
     "overlay": true,
     "accessibility": false,
-    "microphone": true
+    "microphone": true,
+    "keepalive": false
   }
 }
 ```
@@ -1728,7 +1730,17 @@ This endpoint is **public** — no auth required. This is intentional: it allows
 
 - `version` is the **internal API version** string (here `v10.9`) — independent of the app's user-facing `versionName`.
 - `api_key_valid` reflects whether the `X-API-Key` you sent (if any) matches the configured key.
-- `permissions` reports the runtime grants peek-it currently holds (overlay / accessibility / microphone).
+- `permissions` reports the runtime grants peek-it currently holds (overlay / accessibility / microphone / keepalive).
+
+### Anti-kill protection (`permissions.keepalive`)
+
+Some Android TV OEM memory managers (e.g. TCL's TGuard) can kill the peek-it foreground service under memory pressure, leaving the device unreachable until the internal watchdog fires (up to 15 min). peek-it ships an **opt-in keep-alive anchor**: an intentionally empty `NotificationListenerService`. Once the user grants **notification access** (TV: Settings > peek-it > Permissions, or the Designer's Settings > Permissions section), `system_server` keeps a permanent binding to the peek-it process and **re-binds it about 1 second after a kill**, which restarts the overlay service immediately. Notification content is never read — the callbacks are no-ops.
+
+`permissions.keepalive` is `true` when notification access is granted. Integrations that see repeated connectivity drops can surface this flag to suggest enabling the protection. If the TV exposes no settings page for notification access, it can be granted via ADB:
+
+```bash
+adb shell cmd notification allow_listener net.jolabs40.peekit/net.jolabs40.peekit.NotificationKeepAliveService
+```
 - **`features`** is a feature-detection array — test for a capability by membership rather than by version number. Current flags:
 
   | Flag | Meaning |
